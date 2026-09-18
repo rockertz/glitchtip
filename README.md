@@ -132,7 +132,18 @@ Follow the prompts to enter an admin email and password.
 ### 2. Log in to GlitchTip
 Open `https://glitchtip.adisoc.com` in your browser and sign in with the credentials created above.
 
-### 3. Retrieve Generated Credentials
+### 3. Verify Event Ingestion with Python Test Script
+A test script [`test_glitchtip.py`](file:///c:/Users/Pradeep/Project/adisoc/glitchtip/test_glitchtip.py) is included in the repository. Run it to send a sample message and handled exception:
+```bash
+python test_glitchtip.py
+```
+Or specify a custom DSN:
+```bash
+python test_glitchtip.py --dsn "https://<key>@glitchtip.adisoc.com/<project_id>"
+```
+Check your GlitchTip project dashboard to see the captured issues immediately.
+
+### 4. Retrieve Generated Credentials
 To view the automatically generated database password or secret key:
 ```bash
 terraform output db_password

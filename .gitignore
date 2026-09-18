@@ -1,0 +1,22 @@
+# Terraform local execution directory
+.terraform/
+
+# Local state files (GlitchTip uses S3 remote backend)
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Python bytecode
+__pycache__/
+*.py[cod]
+*$py.class
