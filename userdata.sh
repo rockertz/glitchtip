@@ -1,8 +1,9 @@
 #!/bin/bash
-set -euo pipefail
+# cloud-init can execute user data with /bin/sh on some images; keep flags POSIX-safe.
+set -eu
 
 # Redirect stdout and stderr to both console and log file
-exec > >(tee -a /var/log/user-data.log) 2>&1
+exec >> /var/log/user-data.log 2>&1
 echo "=================================================="
 echo "=== Starting GlitchTip Automated Deployment    ==="
 echo "=== Timestamp: $(date) ==="
@@ -45,7 +46,7 @@ apt-get install -y \
 # 3. INSTALL DOCKER & DOCKER COMPOSE PLUGIN
 ##################################################
 echo "[3/9] Installing Docker Engine..."
-if ! command -v docker &> /dev/null; then
+if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com | sh
   systemctl enable docker
   systemctl start docker
@@ -111,6 +112,11 @@ http {
     sendfile        on;
     keepalive_timeout  65;
 
+    map $http_upgrade $connection_upgrade {
+        default upgrade;
+        '' close;
+    }
+
     upstream glitchtip_backend {
         server web:8000;
     }
@@ -131,7 +137,8 @@ http {
 
     # HTTPS: SSL Reverse Proxy to GlitchTip Web
     server {
-        listen 443 ssl http2;
+        listen 443 ssl;
+        http2 on;
         server_name ${glitchtip_domain};
 
         ssl_certificate /etc/letsencrypt/live/${glitchtip_domain}/fullchain.pem;
@@ -146,6 +153,9 @@ http {
 
         location / {
             proxy_pass http://glitchtip_backend;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection $connection_upgrade;
             proxy_set_header Host $host;
             proxy_set_header X-Real-IP $remote_addr;
             proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -169,11 +179,6 @@ services:
       POSTGRES_PASSWORD: ${db_password}
     volumes:
       - /opt/glitchtip/postgres-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${db_user} -d ${db_name}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
 
   redis:
     image: redis:7-alpine
@@ -185,10 +190,8 @@ services:
     image: glitchtip/glitchtip:latest
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - postgres
+      - redis
     environment:
       DATABASE_URL: postgres://${db_user}:${db_password}@postgres:5432/${db_name}
       REDIS_URL: redis://redis:6379/0
@@ -208,10 +211,8 @@ services:
     restart: unless-stopped
     command: ./bin/run-celery-with-beat.sh
     depends_on:
-      postgres:
-        condition: service_healthy
-      redis:
-        condition: service_started
+      - postgres
+      - redis
     environment:
       DATABASE_URL: postgres://${db_user}:${db_password}@postgres:5432/${db_name}
       REDIS_URL: redis://redis:6379/0
@@ -243,17 +244,26 @@ EOF
 echo "[7/9] Running initial database migrations..."
 cd /opt/glitchtip
 
-# Start database first and run migrations
+# Start database first
 docker compose up -d postgres redis
-echo "Waiting for postgres healthcheck..."
-until docker compose ps postgres | grep -q "healthy"; do
+
+# Wait for PostgreSQL to accept connections
+echo "Waiting for postgres to accept connections..."
+for attempt in $(seq 1 30); do
+  if docker compose exec -T postgres pg_isready -U ${db_user} -d ${db_name} >/dev/null 2>&1; then
+    echo "PostgreSQL is ready!"
+    break
+  fi
+  echo "PostgreSQL not ready yet, waiting 2s... ($attempt/30)"
   sleep 2
 done
 
 # Run Django database migrations
+echo "Executing ./manage.py migrate..."
 docker compose run --rm web ./manage.py migrate
 
 # Start all services
+echo "Starting full GlitchTip stack..."
 docker compose up -d
 
 ##################################################
@@ -289,11 +299,10 @@ systemctl enable glitchtip.service
 # Health check script and cron (every 5 minutes)
 cat > /opt/glitchtip/health-check.sh << 'EOF'
 #!/bin/bash
-STATUS=$(curl -k -s -o /dev/null -w "%{http_code}" https://127.0.0.1/ 2>/dev/null || echo "000")
-if [ "$STATUS" = "200" ] || [ "$STATUS" = "301" ] || [ "$STATUS" = "302" ]; then
-    echo "$(date): GlitchTip is healthy (HTTP $STATUS)"
+if curl -k -f -s https://127.0.0.1/ > /dev/null 2>&1; then
+    echo "$(date): GlitchTip is healthy"
 else
-    echo "$(date): GlitchTip returned HTTP $STATUS. Restarting containers..."
+    echo "$(date): GlitchTip health check failed. Restarting containers..."
     docker compose -f /opt/glitchtip/docker-compose.yml restart
 fi
 EOF
@@ -313,4 +322,3 @@ echo "=================================================="
 echo "=== GlitchTip Installation Complete!          ==="
 echo "=== URL: https://${glitchtip_domain}         ==="
 echo "=================================================="
-
